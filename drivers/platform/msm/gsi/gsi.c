@@ -1,5 +1,5 @@
-/* Copyright (c) 2015-2020, The Linux Foundation. All rights reserved.						  
-								  
+/* Copyright (c) 2015-2019, The Linux Foundation. All rights reserved.
+ * Copyright (C) 2021 XiaoMi, Inc.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -28,7 +28,6 @@
 #define GSI_CMD_POLL_CNT 5
 #define GSI_STOP_CMD_TIMEOUT_MS 200
 #define GSI_MAX_CH_LOW_WEIGHT 15
-#define GSI_IRQ_STORM_THR 5
 
 #define GSI_STOP_CMD_POLL_CNT 4
 #define GSI_STOP_IN_PROC_CMD_POLL_CNT 2
@@ -1007,29 +1006,6 @@ int gsi_unmap_base(void)
 }
 EXPORT_SYMBOL(gsi_unmap_base);
 
-int gsi_is_mcs_enabled(void)
-{
-	uint32_t mcs_enable = 0;
-
-	if (!gsi_ctx) {
-		pr_err("%s:%d gsi context not allocated\n", __func__, __LINE__);
-		return GSI_STATUS_NODEV;
-	}
-
-	if (!gsi_ctx->base) {
-		GSIERR("GSI base is not mapped\n");
-		return -GSI_STATUS_NODEV;
-	}
-
-	mcs_enable = gsi_readl(gsi_ctx->base + GSI_GSI_MCS_CFG_OFFS);
-
-	pr_info("%s:%d MCS enabled:%x\n", __func__, __LINE__, mcs_enable);
-
-	return (mcs_enable & GSI_GSI_MCS_CFG_MCS_ENABLE_BMSK);
-}
-
-EXPORT_SYMBOL(gsi_is_mcs_enabled);
-
 int gsi_register_device(struct gsi_per_props *props, unsigned long *dev_hdl)
 {
 	int res;
@@ -1304,11 +1280,11 @@ int gsi_register_device(struct gsi_per_props *props, unsigned long *dev_hdl)
 			return res;
 		}
 	}
+
 	*dev_hdl = (uintptr_t)gsi_ctx;
 
 	return GSI_STATUS_SUCCESS;
 }
-
 EXPORT_SYMBOL(gsi_register_device);
 
 int gsi_write_device_scratch(unsigned long dev_hdl,
@@ -2515,7 +2491,7 @@ static void __gsi_write_channel_scratch(unsigned long chan_hdl,
 }
 
 int gsi_write_channel_scratch3_reg(unsigned long chan_hdl,
-		union gsi_wdi_channel_scratch3_reg val)
+		union __packed gsi_wdi_channel_scratch3_reg val)
 {
 	struct gsi_chan_ctx *ctx;
 
@@ -2546,7 +2522,7 @@ int gsi_write_channel_scratch3_reg(unsigned long chan_hdl,
 EXPORT_SYMBOL(gsi_write_channel_scratch3_reg);
 
 static void __gsi_read_channel_scratch(unsigned long chan_hdl,
-		union gsi_channel_scratch *val)
+		union gsi_channel_scratch * val)
 {
 	val->data.word1 = gsi_readl(gsi_ctx->base +
 		GSI_EE_n_GSI_CH_k_SCRATCH_0_OFFS(chan_hdl,
@@ -2592,12 +2568,12 @@ static union gsi_channel_scratch __gsi_update_mhi_channel_scratch(
 			gsi_ctx->per.ee));
 
 	/* UPDATE */
-												  
-										  
-															
-													  
+	scr.mhi.mhi_host_wp_addr = mscr.mhi_host_wp_addr;
+	scr.mhi.assert_bit40 = mscr.assert_bit40;
+	scr.mhi.polling_configuration = mscr.polling_configuration;
+	scr.mhi.burst_mode_enabled = mscr.burst_mode_enabled;
 	scr.mhi.polling_mode = mscr.polling_mode;
-													
+	scr.mhi.oob_mod_threshold = mscr.oob_mod_threshold;
 
 	if (gsi_ctx->per.ver < GSI_VER_2_5) {
 		scr.mhi.max_outstanding_tre = mscr.max_outstanding_tre;
@@ -2755,15 +2731,6 @@ int gsi_query_channel_db_addr(unsigned long chan_hdl,
 	return GSI_STATUS_SUCCESS;
 }
 EXPORT_SYMBOL(gsi_query_channel_db_addr);
-
-int gsi_pending_irq_type(void)
-{
-	int ee = gsi_ctx->per.ee;
-
-	return gsi_readl(gsi_ctx->base +
-		GSI_EE_n_CNTXT_TYPE_IRQ_OFFS(ee));
-}
-EXPORT_SYMBOL(gsi_pending_irq_type);
 
 int gsi_start_channel(unsigned long chan_hdl)
 {
@@ -3484,13 +3451,6 @@ int gsi_queue_xfer(unsigned long chan_hdl, uint16_t num_xfers,
 		GSIERR("bad params chan_hdl=%lu num_xfers=%u xfer=%pK\n",
 				chan_hdl, num_xfers, xfer);
 		return -GSI_STATUS_INVALID_PARAMS;
-	}
-
-	if (unlikely(gsi_ctx->chan[chan_hdl].state
-				 == GSI_CHAN_STATE_NOT_ALLOCATED)) {
-		GSIERR("bad state %d\n",
-			   gsi_ctx->chan[chan_hdl].state);
-		return -GSI_STATUS_UNSUPPORTED_OP;
 	}
 
 	ctx = &gsi_ctx->chan[chan_hdl];
@@ -4307,17 +4267,10 @@ int gsi_enable_flow_control_ee(unsigned int chan_idx, unsigned int ee,
 	curr_state = (val &
 				GSI_EE_n_GSI_CH_k_CNTXT_0_CHSTATE_BMSK) >>
 				GSI_EE_n_GSI_CH_k_CNTXT_0_CHSTATE_SHFT;
-	if (curr_state == GSI_CHAN_STATE_FLOW_CONTROL) {
-		GSIDBG("ch %u state updated to %u\n", chan_idx, curr_state);
-		res = GSI_STATUS_SUCCESS;
-	} else {
-		GSIERR("ch %u state updated to %u incorrect state\n",
-							chan_idx, curr_state);
-		res = -GSI_STATUS_ERROR;
-	}
-	
+	GSIDBG("ch %u state updated to %u\n", chan_idx, curr_state);
+	res = GSI_STATUS_SUCCESS;
 	*code = gsi_ctx->scratch.word0.s.generic_ee_cmd_return_code;
-	free_lock:
+free_lock:
 	mutex_unlock(&gsi_ctx->mlock);
 
 	return res;
